@@ -1,0 +1,10 @@
+.DS_Store
+/.idea/
+/.vscode/
+
+/mocks/
+/tmp/
+/dist/
+
+/coverage.*
+
