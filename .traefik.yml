@@ -1,0 +1,29 @@
+displayName: Flecto Redirect Middleware
+type: middleware
+
+import: github.com/flectolab/flecto-traefik-middleware
+
+summary: Traefik middleware plugin for dynamic URL redirection powered by Flecto
+iconPath: .asset/flecto.png
+testData:
+  manager_url: "http://localhost:8080"
+  namespace_code: "my-namespace"
+  project_code: "my-project"
+  token_jwt: "my-jwt-token"
+  header_authorization_name: "Authorization"
+  interval_check: "5m"
+  agent_name: "my-traefik-agent"
+  debug: false
+  host_configs:
+    - hosts:
+        - "example.com"
+        - "example.fr"
+      project_code: "project-fr"
+    - hosts:
+        - "example.es"
+      manager_url: "http://other-manager:8080"
+      namespace_code: "other-namespace"
+      project_code: "project-es"
+      token_jwt: "other-jwt-token"
+      header_authorization_name: "X-Custom-Auth"
+      interval_check: "10m"
