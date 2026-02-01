@@ -4,10 +4,10 @@ github.com/armon/go-radix
 # github.com/davecgh/go-spew v1.1.1
 ## explicit
 github.com/davecgh/go-spew/spew
-# github.com/flectolab/flecto-manager/common v0.0.1
+# github.com/flectolab/flecto-manager/common v0.0.2
 ## explicit; go 1.24
 github.com/flectolab/flecto-manager/common/types
-# github.com/flectolab/go-client v0.0.1
+# github.com/flectolab/go-client v0.0.2
 ## explicit; go 1.24.11
 github.com/flectolab/go-client
 # github.com/jonboulle/clockwork v0.4.0

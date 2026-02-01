@@ -86,7 +86,7 @@ func (c *client) Reload() error {
 		now := c.clock.Now()
 		err = c.loadState()
 		duration := c.clock.Now().Sub(now)
-		agent.LoadDuration = duration
+		agent.LoadDuration = types.NewDuration(duration)
 		if err != nil {
 			agent.Status = types.AgentStatusError
 			agent.Error = err.Error()

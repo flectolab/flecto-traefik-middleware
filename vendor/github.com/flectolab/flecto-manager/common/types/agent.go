@@ -3,7 +3,6 @@ package types
 import (
 	"fmt"
 	"regexp"
-	"time"
 )
 
 var validAgentNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
@@ -41,12 +40,12 @@ func (s AgentStatus) IsValid() bool {
 }
 
 type Agent struct {
-	Name         string        `json:"name" gorm:"size:100"`
-	Status       AgentStatus   `json:"status" gorm:"size:50"`
-	Type         AgentType     `json:"type" gorm:"size:50"`
-	Version      int           `json:"version"`
-	LoadDuration time.Duration `json:"load_duration"`
-	Error        string        `json:"error" gorm:"size:500"`
+	Name         string      `json:"name" gorm:"size:100"`
+	Status       AgentStatus `json:"status" gorm:"size:50"`
+	Type         AgentType   `json:"type" gorm:"size:50"`
+	Version      int         `json:"version"`
+	LoadDuration Duration    `json:"load_duration"`
+	Error        string      `json:"error" gorm:"size:500"`
 }
 
 func ValidateAgent(agent Agent) error {

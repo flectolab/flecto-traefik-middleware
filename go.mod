@@ -3,8 +3,8 @@ module github.com/flectolab/flecto-traefik-middleware
 go 1.24.11
 
 require (
-	github.com/flectolab/flecto-manager/common v0.0.1
-	github.com/flectolab/go-client v0.0.1
+	github.com/flectolab/flecto-manager/common v0.0.2
+	github.com/flectolab/go-client v0.0.2
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/mock v0.6.0
 )
