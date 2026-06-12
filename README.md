@@ -131,6 +131,15 @@ http:
 - `project_code` is always required in each `host_configs` entry and is never inherited from the parent configuration.
 - `agent_name` cannot be overridden in `host_configs` and is always inherited from the root configuration.
 
+### Environment Variables
+
+These tune the plugin globally (set them on the Traefik process), independently of the per-middleware configuration above.
+
+| Variable                     | Default | Description                                                                                                   |
+|------------------------------|---------|---------------------------------------------------------------------------------------------------------------|
+| `FLECTO_REDIRECT_IDLE_DELAY` | `5m`    | Go duration (e.g. `30s`, `10m`). Inactivity window used to detect a settled rebuild before cleaning up obsolete clients (see *Client sharing and cleanup*). Invalid or `<= 0` values fall back to the default. |
+| `FLECTO_REDIRECT_DEBUG`      | `false` | `1` or `true` enables verbose stderr logging of the internal client cache (rounds, per-name client state, and removals). Useful to observe obsolete clients being cleaned up. |
+
 ## How It Works
 
 1. The middleware connects to the Flecto manager on startup
@@ -147,3 +156,13 @@ When `host_configs` is defined:
 - If a host matches, the corresponding project's client is used
 - If no host matches and `project_code` is defined at the root level, the default client is used
 - If no host matches and `project_code` is **not** defined at the root level, the middleware is skipped and the request is passed to the next handler
+
+### Client sharing and cleanup
+
+Traefik calls the plugin once per router that references a middleware, and rebuilds the whole router tree on any configuration change (and on its own, e.g. on ACME events). To avoid spawning a separate Flecto client and polling loop per router, clients are shared in a process-wide cache **keyed by middleware name**:
+
+- All routers referencing the same middleware share a single client (and a single reload ticker) per project. This guarantees the polled state stays consistent and fresh for every router.
+- Any configuration change for an existing middleware name (token rotation, project, interval, host configs...) replaces its client set in place, and the previous tickers are stopped immediately — no leak.
+- The only client that cannot be cleaned up immediately is one whose middleware **name disappears** (the middleware is removed or renamed), because Traefik provides no teardown signal. A background sweeper removes such orphaned clients once the configuration has been idle for `FLECTO_REDIRECT_IDLE_DELAY` (default 5 minutes), stopping their polling and agent heartbeat. Set `FLECTO_REDIRECT_DEBUG=1` to watch this happen in the logs.
+
+> **Known limitation — removing the last Flecto middleware.** The sweeper detects an orphan by noticing that a *surviving* middleware was rebuilt while the removed one was not. If you remove the **only/last** middleware that references this plugin, the plugin stops receiving any calls from Traefik (no surviving middleware to rebuild), so the orphan cannot be detected and its client keeps polling until Traefik is restarted. This is irreducible: with no teardown signal and no surviving middleware, the plugin's internal state for "a still-present middleware that simply wasn't rebuilt" is indistinguishable from "a removed middleware". Removing one middleware among several is fine — survivors trigger the cleanup on the next reload (e.g. an ACME event or another config change). A restart clears any such leftover client.
