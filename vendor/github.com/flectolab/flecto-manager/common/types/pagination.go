@@ -8,6 +8,11 @@ const (
 type PaginationInput struct {
 	Limit  *int `query:"limit"`
 	Offset *int `query:"offset"`
+	// Cursor is the opaque value a previous response returned as Next. When set it
+	// replaces Offset: the server walks from that position instead of skipping rows,
+	// which keeps the cost of a page independent of how deep it is. Treat it as
+	// opaque, its content is an implementation detail of the server.
+	Cursor *string `query:"cursor"`
 }
 
 func (p *PaginationInput) GetLimit() int {
@@ -15,6 +20,14 @@ func (p *PaginationInput) GetLimit() int {
 		return DefaultLimit
 	}
 	return *p.Limit
+}
+
+// GetCursor returns the cursor, empty when paginating by offset.
+func (p *PaginationInput) GetCursor() string {
+	if p == nil || p.Cursor == nil {
+		return ""
+	}
+	return *p.Cursor
 }
 
 func (p *PaginationInput) GetOffset() int {

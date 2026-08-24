@@ -19,6 +19,13 @@ type ClientSettings struct {
 
 	IntervalCheck string `json:"interval_check" mapstructure:"interval_check"`
 	AgentName     string `json:"agent_name" mapstructure:"agent_name"`
+
+	// RedirectsLimit and PagesLimit are how many items the client asks for per
+	// listing request when it reloads its state. Zero means unset: the client
+	// falls back to its own default (client.DefaultRedirectsLimit /
+	// client.DefaultPagesLimit).
+	RedirectsLimit int `json:"redirects_limit" mapstructure:"redirects_limit"`
+	PagesLimit     int `json:"pages_limit" mapstructure:"pages_limit"`
 }
 
 // HostConfig holds the configuration for specific hosts.
@@ -62,6 +69,14 @@ func mergeSettings(parent, override ClientSettings) ClientSettings {
 	if override.IntervalCheck != "" {
 		result.IntervalCheck = override.IntervalCheck
 	}
+	// Zero means unset, so any non-zero value (including an invalid negative one,
+	// rejected later by transformSettings) overrides the parent.
+	if override.RedirectsLimit != 0 {
+		result.RedirectsLimit = override.RedirectsLimit
+	}
+	if override.PagesLimit != 0 {
+		result.PagesLimit = override.PagesLimit
+	}
 	// AgentName is always inherited from parent and cannot be overridden
 	result.AgentName = parent.AgentName
 	return result
@@ -93,6 +108,21 @@ func transformSettings(name string, settings ClientSettings) (*client.Config, er
 		}
 		clientCfg.IntervalCheck = intervalCheck
 	}
+
+	if settings.RedirectsLimit < 0 {
+		return nil, fmt.Errorf("%s: invalid redirects limit (%d), must be greater than 0", name, settings.RedirectsLimit)
+	}
+	if settings.RedirectsLimit > 0 {
+		clientCfg.RedirectsLimit = settings.RedirectsLimit
+	}
+
+	if settings.PagesLimit < 0 {
+		return nil, fmt.Errorf("%s: invalid pages limit (%d), must be greater than 0", name, settings.PagesLimit)
+	}
+	if settings.PagesLimit > 0 {
+		clientCfg.PagesLimit = settings.PagesLimit
+	}
+
 	return clientCfg, nil
 }
 

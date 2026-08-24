@@ -45,6 +45,8 @@ http:
           header_authorization_name: "Authorization"  # optional, default: Authorization
           interval_check: "5m"                        # optional, default: 5m
           agent_name: "my-traefik-agent"                # optional, default: hostname
+          redirects_limit: 500                        # optional, default: 500
+          pages_limit: 500                            # optional, default: 500
           debug: false                                # optional, default: false
 
   routers:
@@ -70,6 +72,8 @@ http:
           namespace_code: "my-namespace"
           token_jwt: "your-jwt-token"
           interval_check: "5m"
+          redirects_limit: 500
+          pages_limit: 500
           debug: false
           # project_code can be empty if host_configs is defined
           # In this case, unmatched hosts will skip the middleware
@@ -90,6 +94,8 @@ http:
               token_jwt: "other-jwt-token"
               header_authorization_name: "X-Custom-Auth"
               interval_check: "10m"
+              redirects_limit: 1000
+              pages_limit: 100
 
   routers:
     my-router:
@@ -112,6 +118,8 @@ http:
 | `header_authorization_name` | No       | `Authorization` | HTTP header name for the JWT token                                |
 | `interval_check`            | No       | `5m`            | Interval to check for redirect rule updates                       |
 | `agent_name`                 | No       | `hostname`      | Name of this Traefik agent (for agent identification)             |
+| `redirects_limit`           | No       | `500`           | Number of redirects fetched per listing request when reloading    |
+| `pages_limit`               | No       | `500`           | Number of pages fetched per listing request when reloading        |
 | `debug`                     | No       | `false`         | Add some headers (project version, url used and redirect matched) |
 | `host_configs`              | No       | -               | List of host-specific configurations (see below)                  |
 
@@ -126,6 +134,8 @@ http:
 | `token_jwt`                 | No       | Yes       | Override the JWT token                             |
 | `header_authorization_name` | No       | Yes       | Override the authorization header name             |
 | `interval_check`            | No       | Yes       | Override the interval check duration               |
+| `redirects_limit`           | No       | Yes       | Override the redirects listing page size           |
+| `pages_limit`               | No       | Yes       | Override the pages listing page size               |
 
 **Notes:**
 - `project_code` is always required in each `host_configs` entry and is never inherited from the parent configuration.
@@ -138,12 +148,28 @@ These tune the plugin globally (set them on the Traefik process), independently 
 | Variable                     | Default | Description                                                                                                   |
 |------------------------------|---------|---------------------------------------------------------------------------------------------------------------|
 | `FLECTO_REDIRECT_IDLE_DELAY` | `5m`    | Go duration (e.g. `30s`, `10m`). Inactivity window used to detect a settled rebuild before cleaning up obsolete clients (see *Client sharing and cleanup*). Invalid or `<= 0` values fall back to the default. |
-| `FLECTO_REDIRECT_DEBUG`      | `false` | `1` or `true` enables verbose stderr logging of the internal client cache (rounds, per-name client state, and removals). Useful to observe obsolete clients being cleaned up. |
+| `FLECTO_REDIRECT_DEBUG`      | `false` | `1` or `true` enables verbose stderr logging: the configuration of each client as it is created, the state version transition on every client reload, plus the internal client cache state (rounds, per-name client state, and removals). Useful to observe the effective configuration and obsolete clients being cleaned up. |
+
+When `FLECTO_REDIRECT_DEBUG` is enabled, the plugin logs, prefixed with `flecto[debug]:`:
+
+- **Client creation** — the *effective* client configuration, after inheritance from the root configuration and after defaults are applied (so `redirects_limit` / `pages_limit` show the real values sent to the manager). One line per client, logged only when a client is actually built: a rebuild that reuses the cached clients (unchanged configuration) logs nothing:
+
+  ```
+  flecto[debug]: flecto@file: created client for https://flecto-manager.example.com|my-namespace|my-project config{manager_url=https://flecto-manager.example.com namespace_code=my-namespace project_code=my-project agent_name=traefik-1 agent_type=traefik header_authorization_name=Authorization interval_check=5m0s redirects_limit=500 pages_limit=500}
+  ```
+
+- **Client reload** — on each polling tick, with the project version before and after and whether the reload succeeded. The configuration is deliberately not repeated here, it is only logged at creation:
+
+  ```
+  flecto[debug]: flecto@file: reload ok for https://flecto-manager.example.com|my-namespace|my-project (stateVersion 41 -> 42)
+  ```
+
+> **Note:** secrets are excluded from every log. JWT tokens are never written out, not even masked: `token_jwt` is absent from the client configuration line.
 
 ## How It Works
 
 1. The middleware connects to the Flecto manager on startup
-2. It periodically polls for redirect rule updates (configurable via `interval_check`)
+2. It periodically polls for redirect rule updates (configurable via `interval_check`), fetching redirects and pages in paginated batches (configurable via `redirects_limit` and `pages_limit`)
 3. For each incoming request, it checks if the hostname and URI match any redirect rule
 4. If a match is found, the request is redirected with the appropriate HTTP status code (301, 302, 307, or 308)
 5. If no match is found, the request is passed to the next handler

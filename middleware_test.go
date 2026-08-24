@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -34,6 +35,7 @@ type mockClient struct {
 	initErr       error
 	reloadErr     error
 	reloadCalled  bool
+	stateVersion  int
 	redirectMatch func(hostname, uri string) (*types.Redirect, string)
 	pageMatch     func(hostname, uri string) *types.Page
 }
@@ -50,7 +52,7 @@ func (m *mockClient) Reload() error {
 }
 
 func (m *mockClient) GetStateVersion() int {
-	return 0
+	return m.stateVersion
 }
 
 func (m *mockClient) RedirectMatch(hostname, uri string) (*types.Redirect, string) {
@@ -720,6 +722,73 @@ func TestReloadClient(t *testing.T) {
 		reloadFn()
 		assert.True(t, mock.reloadCalled)
 	})
+
+	t.Run("logs the state version transition only when debug is enabled", func(t *testing.T) {
+		originalDebug := debugEnabled
+		originalWriter := logWriter
+		t.Cleanup(func() {
+			debugEnabled = originalDebug
+			logWriter = originalWriter
+		})
+
+		var buf bytes.Buffer
+		logWriter = &buf
+
+		debugEnabled = false
+		reloadClient("test-middleware", "http://localhost|ns|proj", &mockClient{})()
+		assert.Empty(t, buf.String())
+
+		debugEnabled = true
+		reloadClient("test-middleware", "http://localhost|ns|proj", &mockClient{stateVersion: 7})()
+		out := buf.String()
+		assert.Contains(t, out, "reload ok for http://localhost|ns|proj (stateVersion 7 -> 7)")
+		// The config belongs to the creation logs only, not to every tick.
+		assert.NotContains(t, out, "manager_url=")
+
+		buf.Reset()
+		reloadClient("test-middleware", "http://localhost|ns|proj", &mockClient{reloadErr: errors.New("boom")})()
+		assert.Contains(t, buf.String(), "reload error for http://localhost|ns|proj")
+	})
+}
+
+func TestDebugClientConfig(t *testing.T) {
+	t.Run("nil config", func(t *testing.T) {
+		assert.Equal(t, "<nil>", debugClientConfig(nil))
+	})
+
+	t.Run("nil http config", func(t *testing.T) {
+		got := debugClientConfig(&client.Config{ManagerUrl: "http://m"})
+		assert.Contains(t, got, "manager_url=http://m")
+		assert.Contains(t, got, "header_authorization_name= ")
+	})
+
+	t.Run("limits fall back to the client defaults when unset", func(t *testing.T) {
+		got := debugClientConfig(&client.Config{Http: &client.HTTPConfig{}})
+		assert.Contains(t, got, fmt.Sprintf("redirects_limit=%d", client.DefaultRedirectsLimit))
+		assert.Contains(t, got, fmt.Sprintf("pages_limit=%d", client.DefaultPagesLimit))
+	})
+
+	t.Run("renders the effective values", func(t *testing.T) {
+		got := debugClientConfig(&client.Config{
+			ManagerUrl:     "http://m",
+			NamespaceCode:  "ns",
+			ProjectCode:    "proj",
+			AgentName:      "agent",
+			AgentType:      types.AgentTypeTraefik,
+			Http:           &client.HTTPConfig{HeaderAuthorizationName: "X-Auth", TokenJWT: "topsecret"},
+			IntervalCheck:  30 * time.Second,
+			RedirectsLimit: 10,
+			PagesLimit:     20,
+		})
+		assert.Contains(t, got, "project_code=proj")
+		assert.Contains(t, got, "agent_name=agent")
+		assert.Contains(t, got, "header_authorization_name=X-Auth")
+		assert.Contains(t, got, "interval_check=30s")
+		assert.Contains(t, got, "redirects_limit=10 pages_limit=20")
+		// Secrets are excluded outright, not masked.
+		assert.NotContains(t, got, "topsecret")
+		assert.NotContains(t, got, "token_jwt")
+	})
 }
 
 func TestStartTicker(t *testing.T) {
@@ -1039,10 +1108,20 @@ func TestDebugLogging(t *testing.T) {
 	_, _ = New(context.Background(), next, cfgB, "mw-b")
 	assert.Contains(t, buf.String(), "new round 1")
 
-	// Round 2 after the custom idle delay, mw-b dropped.
+	// Building a client logs the config it was built with, secret excluded.
+	created := buf.String()
+	assert.Contains(t, created, `mw-a: created client for http://m|ns|a config{manager_url=http://m`)
+	assert.Contains(t, created, "project_code=a")
+	assert.Contains(t, created, "redirects_limit=500 pages_limit=500")
+	assert.NotContains(t, created, "token_jwt")
+
+	// Round 2 after the custom idle delay, mw-b dropped. Same config, so the
+	// cached clients are reused and no client is built - nothing to log.
 	*clock = clock.Add(2 * time.Minute)
+	buf.Reset()
 	_, _ = New(context.Background(), next, cfgA, "mw-a")
 	assert.Contains(t, buf.String(), "new round 2")
+	assert.NotContains(t, buf.String(), "created client for")
 
 	// Settle, then sweep: snapshot + removal logged.
 	*clock = clock.Add(2 * time.Minute)

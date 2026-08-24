@@ -9,6 +9,15 @@ import (
 	"github.com/flectolab/flecto-manager/common/types"
 )
 
+const (
+	// DefaultRedirectsLimit is how many redirects a listing request asks for when
+	// Config.RedirectsLimit is not set. It matches the Manager's own default.
+	DefaultRedirectsLimit = 500
+	// DefaultPagesLimit is how many pages a listing request asks for when
+	// Config.PagesLimit is not set.
+	DefaultPagesLimit = 500
+)
+
 type HTTPConfig struct {
 	Client                  HTTPClient
 	HeaderAuthorizationName string
@@ -26,6 +35,13 @@ type Config struct {
 	Http *HTTPConfig
 
 	IntervalCheck time.Duration
+
+	// RedirectsLimit is how many redirects each listing request asks for.
+	// Zero or negative falls back to DefaultRedirectsLimit.
+	RedirectsLimit int
+	// PagesLimit is how many pages each listing request asks for.
+	// Zero or negative falls back to DefaultPagesLimit.
+	PagesLimit int
 }
 
 func NewDefaultConfig() *Config {
@@ -35,9 +51,30 @@ func NewDefaultConfig() *Config {
 			Client:                  http.DefaultClient,
 			HeaderAuthorizationName: "Authorization",
 		},
-		AgentName:     name,
-		IntervalCheck: 5 * time.Minute,
+		AgentName:      name,
+		IntervalCheck:  5 * time.Minute,
+		RedirectsLimit: DefaultRedirectsLimit,
+		PagesLimit:     DefaultPagesLimit,
 	}
+}
+
+// GetRedirectsLimit returns the limit to send on redirect listing requests,
+// falling back to DefaultRedirectsLimit rather than a limit the server would
+// reject.
+func (c *Config) GetRedirectsLimit() int {
+	if c.RedirectsLimit <= 0 {
+		return DefaultRedirectsLimit
+	}
+	return c.RedirectsLimit
+}
+
+// GetPagesLimit returns the limit to send on page listing requests, falling back
+// to DefaultPagesLimit.
+func (c *Config) GetPagesLimit() int {
+	if c.PagesLimit <= 0 {
+		return DefaultPagesLimit
+	}
+	return c.PagesLimit
 }
 
 func (c *Config) GetUrlApi() string {

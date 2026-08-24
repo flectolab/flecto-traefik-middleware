@@ -13,6 +13,8 @@ testData:
   header_authorization_name: "Authorization"
   interval_check: "5m"
   agent_name: "my-traefik-agent"
+  redirects_limit: 500
+  pages_limit: 500
   debug: false
   host_configs:
     - hosts:
@@ -27,3 +29,5 @@ testData:
       token_jwt: "other-jwt-token"
       header_authorization_name: "X-Custom-Auth"
       interval_check: "10m"
+      redirects_limit: 1000
+      pages_limit: 100

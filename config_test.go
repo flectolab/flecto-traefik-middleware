@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/flectolab/flecto-manager/common/types"
+	"github.com/flectolab/go-client"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -85,6 +86,8 @@ func TestTransformSettings(t *testing.T) {
 				TokenJWT:                "token",
 				HeaderAuthorizationName: "X-Custom-Auth",
 				IntervalCheck:           "5s",
+				RedirectsLimit:          100,
+				PagesLimit:              50,
 			},
 			wantErr: false,
 		},
@@ -100,6 +103,32 @@ func TestTransformSettings(t *testing.T) {
 				IntervalCheck:           "wrong duration",
 			},
 			wantErr: true,
+		},
+		{
+			name:        "error negative redirects limit",
+			middlewareN: "test-middleware",
+			settings: ClientSettings{
+				ManagerUrl:     "http://localhost:8080",
+				NamespaceCode:  "ns",
+				ProjectCode:    "proj",
+				TokenJWT:       "token",
+				RedirectsLimit: -1,
+			},
+			wantErr:     true,
+			errContains: "invalid redirects limit (-1)",
+		},
+		{
+			name:        "error negative pages limit",
+			middlewareN: "test-middleware",
+			settings: ClientSettings{
+				ManagerUrl:    "http://localhost:8080",
+				NamespaceCode: "ns",
+				ProjectCode:   "proj",
+				TokenJWT:      "token",
+				PagesLimit:    -5,
+			},
+			wantErr:     true,
+			errContains: "invalid pages limit (-5)",
 		},
 		{
 			name:        "error message contains middleware name",
@@ -140,6 +169,16 @@ func TestTransformSettings(t *testing.T) {
 					duration, err := time.ParseDuration(tt.settings.IntervalCheck)
 					assert.NoError(t, err)
 					assert.Equal(t, got.IntervalCheck, duration)
+				}
+				if tt.settings.RedirectsLimit > 0 {
+					assert.Equal(t, tt.settings.RedirectsLimit, got.RedirectsLimit)
+				} else {
+					assert.Equal(t, client.DefaultRedirectsLimit, got.RedirectsLimit)
+				}
+				if tt.settings.PagesLimit > 0 {
+					assert.Equal(t, tt.settings.PagesLimit, got.PagesLimit)
+				} else {
+					assert.Equal(t, client.DefaultPagesLimit, got.PagesLimit)
 				}
 			}
 		})
@@ -196,6 +235,8 @@ func TestMergeSettings(t *testing.T) {
 		HeaderAuthorizationName: "X-Parent-Auth",
 		IntervalCheck:           "10s",
 		AgentName:               "hostname",
+		RedirectsLimit:          100,
+		PagesLimit:              50,
 	}
 
 	t.Run("inherits parent except ProjectCode", func(t *testing.T) {
@@ -210,6 +251,8 @@ func TestMergeSettings(t *testing.T) {
 		assert.Equal(t, parent.TokenJWT, result.TokenJWT)
 		assert.Equal(t, parent.HeaderAuthorizationName, result.HeaderAuthorizationName)
 		assert.Equal(t, parent.IntervalCheck, result.IntervalCheck)
+		assert.Equal(t, parent.RedirectsLimit, result.RedirectsLimit)
+		assert.Equal(t, parent.PagesLimit, result.PagesLimit)
 	})
 
 	t.Run("ProjectCode is never inherited from parent", func(t *testing.T) {
@@ -243,6 +286,8 @@ func TestMergeSettings(t *testing.T) {
 			TokenJWT:                "override-token",
 			HeaderAuthorizationName: "X-Override-Auth",
 			IntervalCheck:           "30s",
+			RedirectsLimit:          200,
+			PagesLimit:              20,
 		}
 		result := mergeSettings(parent, override)
 
@@ -252,6 +297,19 @@ func TestMergeSettings(t *testing.T) {
 		assert.Equal(t, override.TokenJWT, result.TokenJWT)
 		assert.Equal(t, override.HeaderAuthorizationName, result.HeaderAuthorizationName)
 		assert.Equal(t, override.IntervalCheck, result.IntervalCheck)
+		assert.Equal(t, override.RedirectsLimit, result.RedirectsLimit)
+		assert.Equal(t, override.PagesLimit, result.PagesLimit)
+	})
+
+	t.Run("limits fall back to parent when unset and a negative override wins", func(t *testing.T) {
+		result := mergeSettings(parent, ClientSettings{ProjectCode: "override-proj", RedirectsLimit: 300})
+		assert.Equal(t, 300, result.RedirectsLimit)
+		assert.Equal(t, parent.PagesLimit, result.PagesLimit) // unset (0) inherits
+
+		// A negative value is not treated as unset: it overrides so that
+		// transformSettings can reject it instead of silently inheriting.
+		result = mergeSettings(parent, ClientSettings{ProjectCode: "override-proj", PagesLimit: -1})
+		assert.Equal(t, -1, result.PagesLimit)
 	})
 
 	t.Run("AgentName is always inherited from parent and cannot be overridden", func(t *testing.T) {

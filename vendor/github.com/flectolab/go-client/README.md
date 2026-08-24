@@ -26,6 +26,8 @@ cfg.Http.TokenJWT = "your-jwt-token"
 // Optional settings
 cfg.AgentName = "my-agent"             // Default: hostname
 cfg.IntervalCheck = 5 * time.Minute    // Default: 5 minutes
+cfg.RedirectsLimit = 500               // Default: 500 redirects per listing request
+cfg.PagesLimit = 500                   // Default: 500 pages per listing request
 ```
 
 ### Configuration Options
@@ -38,6 +40,8 @@ cfg.IntervalCheck = 5 * time.Minute    // Default: 5 minutes
 | `AgentType` | `types.AgentType` | Yes | `""` | Agent type (e.g. `types.AgentTypeDefault`) |
 | `AgentName` | `string` | No | hostname | Agent name for status reporting |
 | `IntervalCheck` | `time.Duration` | No | `5m` | Interval between version checks |
+| `RedirectsLimit` | `int` | No | `500` | Redirects requested per listing request. Zero or negative falls back to the default |
+| `PagesLimit` | `int` | No | `500` | Pages requested per listing request. Zero or negative falls back to the default |
 | `Http.TokenJWT` | `string` | Yes | `""` | JWT token for authentication |
 | `Http.HeaderAuthorizationName` | `string` | No | `"Authorization"` | Authorization header name |
 

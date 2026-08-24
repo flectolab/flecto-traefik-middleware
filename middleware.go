@@ -79,6 +79,9 @@ var (
 	idleDelay = envDuration("FLECTO_REDIRECT_IDLE_DELAY", 5*time.Minute)
 	// debugEnabled (FLECTO_REDIRECT_DEBUG=1|true) logs the cache state on every
 	// GC tick plus round bumps and removals, to observe obsolete client cleanup.
+	// It also logs the config of each client as it is created, and the state
+	// version transition on every client reload. Secrets are excluded from those
+	// logs: no JWT is ever written out.
 	debugEnabled = envBool("FLECTO_REDIRECT_DEBUG")
 
 	gcTick  = time.Minute // how often the GC wakes up to check
@@ -101,11 +104,39 @@ func envBool(key string) bool {
 
 func reloadClient(name, key string, c client.Client) func() {
 	return func() {
+		versionBefore := c.GetStateVersion()
 		err := c.Reload()
 		if err != nil {
 			_, _ = fmt.Fprintf(logWriter, "%s: Failed to reload client for %s: %s\n", name, key, strings.TrimSpace(err.Error()))
 		}
+		if debugEnabled {
+			_, _ = fmt.Fprintf(logWriter, "flecto[debug]: %s: reload %s for %s (stateVersion %d -> %d)\n",
+				name, reloadStatus(err), key, versionBefore, c.GetStateVersion())
+		}
 	}
+}
+
+func reloadStatus(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
+}
+
+// debugClientConfig renders the effective client config - after merge, defaults
+// and limit fallbacks - as a single line. Secrets are left out entirely: the JWT
+// is never part of the output.
+func debugClientConfig(cfg *client.Config) string {
+	if cfg == nil {
+		return "<nil>"
+	}
+	header := ""
+	if cfg.Http != nil {
+		header = cfg.Http.HeaderAuthorizationName
+	}
+	return fmt.Sprintf("manager_url=%s namespace_code=%s project_code=%s agent_name=%s agent_type=%s header_authorization_name=%s interval_check=%s redirects_limit=%d pages_limit=%d",
+		cfg.ManagerUrl, cfg.NamespaceCode, cfg.ProjectCode, cfg.AgentName, cfg.AgentType,
+		header, cfg.IntervalCheck, cfg.GetRedirectsLimit(), cfg.GetPagesLimit())
 }
 
 // settingsKey generates a unique key based on the client settings. Used to
@@ -159,6 +190,9 @@ func buildClients(name string, config *Config) (*cachedMiddleware, error) {
 			return nil, err
 		}
 		c := clientFactory(clientCfg)
+		if debugEnabled {
+			_, _ = fmt.Fprintf(logWriter, "flecto[debug]: %s: created client for %s config{%s}\n", name, key, debugClientConfig(clientCfg))
+		}
 
 		// Load asynchronously: never block New() (and the cache lock) on the
 		// network. The ticker keeps the client fresh afterwards.

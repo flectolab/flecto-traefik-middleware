@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -174,35 +175,16 @@ func (c *client) getProjectVersion() (int, error) {
 
 func (c *client) getProjectRedirects() ([]types.Redirect, error) {
 	redirects := make([]types.Redirect, 0)
-	offset := 0
-	limit := 100
-	for {
-		redirectList := types.RedirectList{}
-		url := fmt.Sprintf("%s?limit=%d&offset=%d", c.cfg.GetUrlApiRedirects(), limit, offset)
-		req, err := NewRequest(c.cfg.Http, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, err
+	err := c.walkListing(c.cfg.GetUrlApiRedirects(), c.cfg.GetRedirectsLimit(), func(body io.Reader) (listingPage, error) {
+		list := types.RedirectList{}
+		if errDecode := json.NewDecoder(body).Decode(&list); errDecode != nil {
+			return listingPage{}, errDecode
 		}
-		resp, errReq := c.httpClient.Do(req)
-		if errReq != nil {
-			return nil, errReq
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			return nil, fmt.Errorf("unexpected status code for %s: %s (%d) %s", c.cfg.GetUrlApiRedirects(), resp.Status, resp.StatusCode, body)
-		}
-
-		err = json.NewDecoder(resp.Body).Decode(&redirectList)
-		if err != nil {
-			return nil, err
-		}
-		_ = resp.Body.Close()
-		redirects = append(redirects, redirectList.Items...)
-		offset += limit
-		if offset >= redirectList.Total {
-			break
-		}
+		redirects = append(redirects, list.Items...)
+		return listingPage{count: len(list.Items), total: list.Total, next: list.Next}, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return redirects, nil
@@ -210,38 +192,102 @@ func (c *client) getProjectRedirects() ([]types.Redirect, error) {
 
 func (c *client) getProjectPages() ([]types.Page, error) {
 	pages := make([]types.Page, 0)
+	err := c.walkListing(c.cfg.GetUrlApiPages(), c.cfg.GetPagesLimit(), func(body io.Reader) (listingPage, error) {
+		list := types.PageList{}
+		if errDecode := json.NewDecoder(body).Decode(&list); errDecode != nil {
+			return listingPage{}, errDecode
+		}
+		pages = append(pages, list.Items...)
+		return listingPage{count: len(list.Items), total: list.Total, next: list.Next}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return pages, nil
+}
+
+// listingPage is what the pagination walk needs to know about a page a decoder
+// has already consumed: how many items it held, plus the server's own view of
+// the listing.
+type listingPage struct {
+	count int
+	total int
+	next  string
+}
+
+// decodeListing decodes one listing response body, accumulates the items it
+// holds and reports the page metadata back to the walk. Decoding is a callback
+// rather than a type parameter so the walk stays free of generics, which the
+// Traefik plugin interpreter does not support.
+type decodeListing func(body io.Reader) (listingPage, error)
+
+// walkListing walks a listing endpoint until it is exhausted. It prefers the
+// cursor the server sends as Next: a cursor page costs the server the same
+// however deep it is, while an offset page makes it count the whole table and
+// skip every row before the page. A Manager that sends no Next is walked by
+// offset as before.
+func (c *client) walkListing(baseUrl string, limit int, decode decodeListing) error {
 	offset := 0
-	limit := 100
+	cursor := ""
 	for {
-		pageList := types.PageList{}
-		url := fmt.Sprintf("%s?limit=%d&offset=%d", c.cfg.GetUrlApiPages(), limit, offset)
-		req, err := NewRequest(c.cfg.Http, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, err
-		}
-		resp, errReq := c.httpClient.Do(req)
-		if errReq != nil {
-			return nil, errReq
+		pageUrl := fmt.Sprintf("%s?limit=%d&offset=%d", baseUrl, limit, offset)
+		if cursor != "" {
+			// cursor replaces offset, and is escaped because its content is opaque.
+			pageUrl = fmt.Sprintf("%s?limit=%d&cursor=%s", baseUrl, limit, url.QueryEscape(cursor))
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			return nil, fmt.Errorf("unexpected status code for %s: %s (%d) %s", c.cfg.GetUrlApiPages(), resp.Status, resp.StatusCode, body)
+		page, err := c.fetchListingPage(pageUrl, baseUrl, decode)
+		if err != nil {
+			return err
 		}
 
-		err = json.NewDecoder(resp.Body).Decode(&pageList)
-		if err != nil {
-			return nil, err
+		// A server that keeps handing out a cursor for an empty page would loop
+		// forever, so an empty page always ends the walk.
+		if page.count == 0 {
+			break
 		}
-		_ = resp.Body.Close()
-		pages = append(pages, pageList.Items...)
-		offset += limit
-		if offset >= pageList.Total {
+
+		if page.next != "" {
+			cursor = page.next
+			continue
+		}
+		if cursor != "" {
+			// Walking by cursor and the server stopped sending one: nothing left.
+			break
+		}
+
+		// No cursor anywhere: fall back to offset. Advancing by what the page
+		// actually held, not by limit, so a short page cannot skip rows.
+		offset += page.count
+		if page.count < limit || offset >= page.total {
 			break
 		}
 	}
 
-	return pages, nil
+	return nil
+}
+
+// fetchListingPage performs one listing request and hands its body to decode.
+// baseUrl is the endpoint without the pagination query, and is what error
+// messages name.
+func (c *client) fetchListingPage(pageUrl, baseUrl string, decode decodeListing) (listingPage, error) {
+	req, err := NewRequest(c.cfg.Http, http.MethodGet, pageUrl, nil)
+	if err != nil {
+		return listingPage{}, err
+	}
+	resp, errReq := c.httpClient.Do(req)
+	if errReq != nil {
+		return listingPage{}, errReq
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return listingPage{}, fmt.Errorf("unexpected status code for %s: %s (%d) %s", baseUrl, resp.Status, resp.StatusCode, body)
+	}
+
+	return decode(resp.Body)
 }
 
 func (c *client) sendAgentStatus(agent types.Agent) error {

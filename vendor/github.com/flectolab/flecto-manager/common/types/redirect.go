@@ -45,6 +45,10 @@ type RedirectList struct {
 	Total  int
 	Limit  int
 	Offset int
+	// Next is the cursor to pass as PaginationInput.Cursor to get the following
+	// page. Empty means there is nothing more to fetch. Clients that paginate by
+	// offset never receive it and can keep using HasMore.
+	Next string `json:",omitempty"`
 }
 
 func (rl RedirectList) HasMore() bool {
