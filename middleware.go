@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/flectolab/flecto-manager/common/types"
 	"github.com/flectolab/go-client"
 )
 
@@ -367,6 +368,16 @@ func (m *Middleware) clientForHost(host string) client.Client {
 	return m.defaultClient
 }
 
+// debugRedirect renders a matched redirect for the X-Middleware-Flecto-Redirect
+// debug header. Fields are listed explicitly: formatting the struct with %v
+// would print the pointer addresses of the options instead of their values.
+// Options are shown as their effective value (an unset option is false).
+func debugRedirect(r *types.Redirect) string {
+	return fmt.Sprintf("type=%s source=%s target=%s status=%s ignoreQueryString=%t preserveQueryString=%t",
+		r.Type, r.Source, r.Target, r.Status,
+		r.Options.IsIgnoreQueryString(), r.Options.IsPreserveQueryString())
+}
+
 func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	c := m.clientForHost(req.Host)
 
@@ -383,7 +394,7 @@ func (m *Middleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	redirect, target := c.RedirectMatch(req.Host, req.URL.RequestURI())
 	if redirect != nil {
 		if m.debug {
-			rw.Header().Add("X-Middleware-Flecto-Redirect", fmt.Sprintf("%v", redirect))
+			rw.Header().Add("X-Middleware-Flecto-Redirect", debugRedirect(redirect))
 		}
 		http.Redirect(rw, req, target, redirect.HTTPCode())
 		return

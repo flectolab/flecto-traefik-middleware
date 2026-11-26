@@ -174,6 +174,50 @@ When `FLECTO_REDIRECT_DEBUG` is enabled, the plugin logs, prefixed with `flecto[
 4. If a match is found, the request is redirected with the appropriate HTTP status code (301, 302, 307, or 308)
 5. If no match is found, the request is passed to the next handler
 
+### Redirect options (query string)
+
+Each redirect defined in Flecto Manager can carry options that control how the query string of the request is handled. An option that is not set behaves like `false`, which is the behavior of rules created before options existed.
+
+| Option                | Allowed on              | Description                                                                                                  |
+|-----------------------|-------------------------|--------------------------------------------------------------------------------------------------------------|
+| `ignoreQueryString`   | `BASIC`, `BASIC_HOST`   | The rule matches whatever the query string of the request is: `/a` matches `/a`, `/a?utm_source=x`, ...      |
+| `preserveQueryString` | all types               | The query string of the request is forwarded to the target.                                                  |
+
+With `preserveQueryString`, a target that already has a query string is kept as written and only receives the request parameters it does not have yet:
+
+| Target         | Request                     | `Location`                  |
+|----------------|-----------------------------|-----------------------------|
+| `/new`         | `/a?utm_source=x`           | `/new?utm_source=x`         |
+| `/new?lang=fr` | `/a?lang=en&utm_source=x`   | `/new?lang=fr&utm_source=x` |
+
+The middleware always hands the full request URI (path and query string) to the Flecto client and uses the target it returns as is: the query string is never appended by the middleware itself.
+
+#### Matching order
+
+For a given request, rules are tried in this order, the first match wins:
+
+1. Exact match on the full URI, **query string included** (`BASIC_HOST`, then `BASIC`)
+2. `BASIC_HOST`, then `BASIC` rules flagged `ignoreQueryString`, on the URI **without** its query string
+3. Regex rules (`REGEX_HOST`, then `REGEX`)
+
+So an exact rule `/a?utm_source=x` always wins over an `ignoreQueryString` rule `/a` for the request `/a?utm_source=x`. A rule without options never matches a request whose query string differs from its source.
+
+### Debug headers
+
+With `debug: true`, the middleware adds these response headers:
+
+| Header                         | Content                                                                 |
+|--------------------------------|-------------------------------------------------------------------------|
+| `X-Middleware-Flecto-Version`  | Project version currently loaded by the client                          |
+| `X-Middleware-Flecto-Url`      | Host and URI (with query string) used for matching                     |
+| `X-Middleware-Flecto-Redirect` | Matched redirect, only when a redirect matched                         |
+
+`X-Middleware-Flecto-Redirect` lists the rule and its *effective* options (an unset option is shown as `false`):
+
+```
+X-Middleware-Flecto-Redirect: type=BASIC source=/a target=/new status=MOVED_PERMANENT ignoreQueryString=true preserveQueryString=true
+```
+
 ### Behavior with `host_configs`
 
 When `host_configs` is defined:

@@ -1250,3 +1250,158 @@ func TestNew_ReuseOnSameConfig_RebuildOnChange(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 2, createCount)
 }
+
+func boolPtr(b bool) *bool { return &b }
+
+// TestMiddleware_ServeHTTP_RedirectOptions runs the real upstream redirect
+// matcher behind the middleware, so query string handling (IgnoreQueryString,
+// PreserveQueryString) is exercised end to end.
+func TestMiddleware_ServeHTTP_RedirectOptions(t *testing.T) {
+	ignore := types.RedirectOptions{IgnoreQueryString: boolPtr(true)}
+	ignoreAndPreserve := types.RedirectOptions{IgnoreQueryString: boolPtr(true), PreserveQueryString: boolPtr(true)}
+
+	tests := []struct {
+		name           string
+		redirects      []types.Redirect
+		requestURL     string
+		wantStatusCode int
+		wantLocation   string
+		wantNextCalled bool
+		wantDebug      string
+	}{
+		{
+			name: "ignore query string - BASIC rule matches request with query string",
+			redirects: []types.Redirect{
+				{Type: types.RedirectTypeBasic, Source: "/a", Target: "/new", Status: types.RedirectStatusMovedPermanent, Options: ignore},
+			},
+			requestURL:     "http://example.com/a?utm_source=x",
+			wantStatusCode: http.StatusMovedPermanently,
+			wantLocation:   "/new",
+			wantDebug:      "type=BASIC source=/a target=/new status=MOVED_PERMANENT ignoreQueryString=true preserveQueryString=false",
+		},
+		{
+			name: "ignore query string - BASIC_HOST rule matches request with query string",
+			redirects: []types.Redirect{
+				{Type: types.RedirectTypeBasicHost, Source: "example.com/a", Target: "https://example.com/new", Status: types.RedirectStatusFound, Options: ignore},
+			},
+			requestURL:     "http://example.com/a?utm_source=x",
+			wantStatusCode: http.StatusFound,
+			wantLocation:   "https://example.com/new",
+			wantDebug:      "type=BASIC_HOST source=example.com/a target=https://example.com/new status=FOUND ignoreQueryString=true preserveQueryString=false",
+		},
+		{
+			name: "no options - request with query string falls through to next handler",
+			redirects: []types.Redirect{
+				{Type: types.RedirectTypeBasic, Source: "/a", Target: "/new", Status: types.RedirectStatusMovedPermanent},
+			},
+			requestURL:     "http://example.com/a?utm_source=x",
+			wantStatusCode: http.StatusOK,
+			wantNextCalled: true,
+		},
+		{
+			name: "preserve query string - Location carries the request query string",
+			redirects: []types.Redirect{
+				{Type: types.RedirectTypeBasic, Source: "/a", Target: "/new", Status: types.RedirectStatusMovedPermanent, Options: ignoreAndPreserve},
+			},
+			requestURL:     "http://example.com/a?utm_source=x",
+			wantStatusCode: http.StatusMovedPermanently,
+			wantLocation:   "/new?utm_source=x",
+			wantDebug:      "type=BASIC source=/a target=/new status=MOVED_PERMANENT ignoreQueryString=true preserveQueryString=true",
+		},
+		{
+			name: "no preserve query string - Location does not carry the request query string",
+			redirects: []types.Redirect{
+				{Type: types.RedirectTypeBasic, Source: "/a", Target: "/new", Status: types.RedirectStatusMovedPermanent, Options: ignore},
+			},
+			requestURL:     "http://example.com/a?utm_source=x",
+			wantStatusCode: http.StatusMovedPermanently,
+			wantLocation:   "/new",
+		},
+		{
+			name: "preserve query string - target query string kept as written, only missing params appended",
+			redirects: []types.Redirect{
+				{Type: types.RedirectTypeBasic, Source: "/a", Target: "/new?lang=fr", Status: types.RedirectStatusMovedPermanent, Options: ignoreAndPreserve},
+			},
+			requestURL:     "http://example.com/a?lang=en&utm_source=x",
+			wantStatusCode: http.StatusMovedPermanently,
+			wantLocation:   "/new?lang=fr&utm_source=x",
+		},
+		{
+			name: "exact match with query string wins over ignore rule",
+			redirects: []types.Redirect{
+				{Type: types.RedirectTypeBasic, Source: "/a", Target: "/ignore", Status: types.RedirectStatusMovedPermanent, Options: ignore},
+				{Type: types.RedirectTypeBasic, Source: "/a?utm_source=x", Target: "/exact", Status: types.RedirectStatusFound},
+			},
+			requestURL:     "http://example.com/a?utm_source=x",
+			wantStatusCode: http.StatusFound,
+			wantLocation:   "/exact",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			matcher := types.NewRedirectTreeMatcher()
+			for i := range tt.redirects {
+				assert.NoError(t, matcher.Insert(&tt.redirects[i]))
+			}
+
+			nextCalled := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := &Middleware{
+				name:          "test",
+				next:          next,
+				debug:         true,
+				defaultClient: &mockClient{redirectMatch: matcher.Match},
+				hostClients:   make(map[string]client.Client),
+			}
+
+			req := httptest.NewRequest(http.MethodGet, tt.requestURL, nil)
+			rec := httptest.NewRecorder()
+
+			middleware.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantStatusCode, rec.Code)
+			assert.Equal(t, tt.wantNextCalled, nextCalled)
+			assert.Equal(t, tt.wantLocation, rec.Header().Get("Location"))
+			if tt.wantDebug != "" {
+				assert.Equal(t, tt.wantDebug, rec.Header().Get("X-Middleware-Flecto-Redirect"))
+			}
+		})
+	}
+}
+
+func TestDebugRedirect(t *testing.T) {
+	tests := []struct {
+		name     string
+		redirect *types.Redirect
+		want     string
+	}{
+		{
+			name:     "options not set render as false",
+			redirect: &types.Redirect{Type: types.RedirectTypeRegex, Source: "^/a/(.*)$", Target: "/b/$1", Status: types.RedirectStatusTemporary},
+			want:     "type=REGEX source=^/a/(.*)$ target=/b/$1 status=TEMPORARY_REDIRECT ignoreQueryString=false preserveQueryString=false",
+		},
+		{
+			name: "options explicitly false",
+			redirect: &types.Redirect{Type: types.RedirectTypeBasic, Source: "/a", Target: "/b", Status: types.RedirectStatusPermanent,
+				Options: types.RedirectOptions{IgnoreQueryString: boolPtr(false), PreserveQueryString: boolPtr(false)}},
+			want: "type=BASIC source=/a target=/b status=PERMANENT_REDIRECT ignoreQueryString=false preserveQueryString=false",
+		},
+		{
+			name: "options set",
+			redirect: &types.Redirect{Type: types.RedirectTypeBasic, Source: "/a", Target: "/b", Status: types.RedirectStatusMovedPermanent,
+				Options: types.RedirectOptions{IgnoreQueryString: boolPtr(true), PreserveQueryString: boolPtr(true)}},
+			want: "type=BASIC source=/a target=/b status=MOVED_PERMANENT ignoreQueryString=true preserveQueryString=true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, debugRedirect(tt.redirect))
+		})
+	}
+}

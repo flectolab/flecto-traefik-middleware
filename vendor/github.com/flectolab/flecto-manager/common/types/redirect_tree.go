@@ -11,7 +11,25 @@ import (
 
 type compiledRedirect struct {
 	*Redirect
-	regex *regexp.Regexp
+	regex               *regexp.Regexp
+	ignoreQueryString   bool
+	preserveQueryString bool
+}
+
+func newCompiledRedirect(r *Redirect, re *regexp.Regexp) *compiledRedirect {
+	return &compiledRedirect{
+		Redirect:            r,
+		regex:               re,
+		ignoreQueryString:   r.Options.IsIgnoreQueryString(),
+		preserveQueryString: r.Options.IsPreserveQueryString(),
+	}
+}
+
+func (cr *compiledRedirect) buildTarget(target, rawQuery string) string {
+	if !cr.preserveQueryString {
+		return target
+	}
+	return AppendQueryString(target, rawQuery)
 }
 
 type regexBucket struct {
@@ -47,10 +65,10 @@ func NewRedirectTreeMatcher() RedirectTreeMatcher {
 func (rt *RedirectTree) Insert(r *Redirect) error {
 	switch r.Type {
 	case RedirectTypeBasicHost:
-		rt.basicHost.Insert(r.Source, &compiledRedirect{Redirect: r})
+		rt.basicHost.Insert(r.Source, newCompiledRedirect(r, nil))
 
 	case RedirectTypeBasic:
-		rt.basic.Insert(r.Source, &compiledRedirect{Redirect: r})
+		rt.basic.Insert(r.Source, newCompiledRedirect(r, nil))
 
 	case RedirectTypeRegexHost, RedirectTypeRegex:
 		re, err := regexp.Compile(r.Source)
@@ -58,7 +76,7 @@ func (rt *RedirectTree) Insert(r *Redirect) error {
 			return err
 		}
 
-		cr := &compiledRedirect{Redirect: r, regex: re}
+		cr := newCompiledRedirect(r, re)
 		prefix := extractRegexPrefix(r.Source)
 		tree := rt.regex
 		rootBucket := &rt.regexRoot
@@ -82,31 +100,60 @@ func (rt *RedirectTree) Insert(r *Redirect) error {
 	return nil
 }
 
+// Match tries exact matches first, query string included, so a request keeps the
+// redirect it matched before options existed. Redirects ignoring the query string
+// come next, before the regexes.
 func (rt *RedirectTree) Match(host, uri string) (*Redirect, string) {
 	hostURI := host + uri
+	_, rawQuery, hasQuery := strings.Cut(uri, "?")
 
 	if val, found := rt.basicHost.Get(hostURI); found {
 		cr := val.(*compiledRedirect)
-		return cr.Redirect, cr.Target
+		return cr.Redirect, cr.buildTarget(cr.Target, rawQuery)
 	}
 
 	if val, found := rt.basic.Get(uri); found {
 		cr := val.(*compiledRedirect)
-		return cr.Redirect, cr.Target
+		return cr.Redirect, cr.buildTarget(cr.Target, rawQuery)
 	}
 
-	if r, target := rt.matchRegex(rt.regexHost, rt.regexHostRoot, hostURI); r != nil {
+	if hasQuery {
+		path := uri[:len(uri)-len(rawQuery)-1]
+
+		if cr := lookupIgnoringQueryString(rt.basicHost, host+path); cr != nil {
+			return cr.Redirect, cr.buildTarget(cr.Target, rawQuery)
+		}
+
+		if cr := lookupIgnoringQueryString(rt.basic, path); cr != nil {
+			return cr.Redirect, cr.buildTarget(cr.Target, rawQuery)
+		}
+	}
+
+	if r, target := rt.matchRegex(rt.regexHost, rt.regexHostRoot, hostURI, rawQuery); r != nil {
 		return r, target
 	}
 
-	if r, target := rt.matchRegex(rt.regex, rt.regexRoot, uri); r != nil {
+	if r, target := rt.matchRegex(rt.regex, rt.regexRoot, uri, rawQuery); r != nil {
 		return r, target
 	}
 
 	return nil, ""
 }
 
-func (rt *RedirectTree) matchRegex(tree *radix.Tree, rootBucket []*compiledRedirect, input string) (*Redirect, string) {
+// Redirects not ignoring the query string were already tried with the full uri.
+func lookupIgnoringQueryString(tree *radix.Tree, key string) *compiledRedirect {
+	val, found := tree.Get(key)
+	if !found {
+		return nil
+	}
+	cr := val.(*compiledRedirect)
+	if !cr.ignoreQueryString {
+		return nil
+	}
+	return cr
+}
+
+func (rt *RedirectTree) matchRegex(tree *radix.Tree, rootBucket []*compiledRedirect, input, rawQuery string) (*Redirect, string) {
 	var candidates []*compiledRedirect
 
 	tree.WalkPrefix(input[:minInt(len(input), 1)], func(prefix string, val interface{}) bool {
@@ -124,7 +171,7 @@ func (rt *RedirectTree) matchRegex(tree *radix.Tree, rootBucket []*compiledRedir
 	for _, cr := range candidates {
 		if matches := cr.regex.FindStringSubmatch(input); matches != nil {
 			target := resolveTarget(cr.Target, matches)
-			return cr.Redirect, target
+			return cr.Redirect, cr.buildTarget(target, rawQuery)
 		}
 	}
 

@@ -78,6 +78,49 @@ if page != nil {
 }
 ```
 
+## Redirect Matching
+
+### Matching order
+
+`RedirectMatch(host, uri)` tries the rules in this order and returns the first match:
+
+1. `BASIC_HOST` exact match, query string included
+2. `BASIC` exact match, query string included
+3. `BASIC_HOST` on the uri without its query string, only rules with `ignoreQueryString`
+4. `BASIC` on the uri without its query string, only rules with `ignoreQueryString`
+5. `REGEX_HOST`, then `REGEX`
+
+Steps 3 and 4 only run when the uri contains `?`. An exact rule such as `/a?x=1`
+therefore always wins over an `ignoreQueryString` rule `/a`.
+
+### Redirect options
+
+Each redirect carries optional `Options` (`types.RedirectOptions`). An option that is
+not set behaves like `false`, so rules without options behave exactly as before.
+
+| Option | Applies to | Description |
+|--------|------------|-------------|
+| `ignoreQueryString` | `BASIC`, `BASIC_HOST` | The rule matches the request path whatever its query string is |
+| `preserveQueryString` | all types | The incoming query string is forwarded to the target |
+
+With `preserveQueryString`, the target returned by `RedirectMatch` already carries the
+request query string; there is nothing to build on the caller side. The rules are:
+
+- the query string is inserted before any `#fragment` of the target;
+- a target without query string gets the request query string appended as is;
+- a target with a query string keeps it exactly as written, and only the request
+  parameters whose key it does not have are appended, in their order (the target
+  wins on a shared key);
+- an empty request query string (`/a` or `/a?`) leaves the target unchanged.
+
+Examples for the request `/a?utm_source=x&lang=en`:
+
+| Target | Result |
+|--------|--------|
+| `/b` | `/b?utm_source=x&lang=en` |
+| `/b?lang=fr` | `/b?lang=fr&utm_source=x` |
+| `/b?next=/x&amp#top` | `/b?next=/x&amp&utm_source=x&lang=en#top` |
+
 ## Refresh Modes
 
 ### Manual refresh with Reload
@@ -167,7 +210,7 @@ func main() {
 
         // Check for redirect
         if redirect, target := c.RedirectMatch(r.Host, r.URL.RequestURI()); redirect != nil {
-            http.Redirect(w, r, target, int(redirect.Status))
+            http.Redirect(w, r, target, redirect.HTTPCode())
             return
         }
 
